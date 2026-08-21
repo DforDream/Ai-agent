@@ -1,0 +1,5 @@
+from langchain_core.prompts import load_prompt
+
+template = load_prompt("prompt.json", encoding="utf-8")
+
+print(template.format(name="张三", what="搞笑的"))
