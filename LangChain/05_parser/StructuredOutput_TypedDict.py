@@ -1,0 +1,27 @@
+import os
+from typing import TypedDict, Annotated
+from dotenv import load_dotenv
+from langchain.chat_models import init_chat_model
+
+load_dotenv(encoding="utf-8")
+
+llm = init_chat_model(
+    model="qwen3.8-2.4t-a95b",
+    model_provider="openai",
+    api_key=os.getenv("QWEN_API_KEY"),
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+
+class Animal(TypedDict):
+    animal: Annotated[str, "动物"]
+    emoji: Annotated[str, "表情"]
+
+class AnimalList(TypedDict):
+    animals: Annotated[list[Animal], "动物与表情列表"]
+
+messages = [{"role": "user", "content": "任意生成三种动物，以及他们的 emoji 表情"}]
+
+llm_with_structured_output = llm.with_structured_output(AnimalList)
+
+result = llm_with_structured_output.invoke(messages)
+print(result)
