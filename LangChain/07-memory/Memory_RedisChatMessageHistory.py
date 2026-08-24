@@ -1,0 +1,86 @@
+from dotenv import load_dotenv
+load_dotenv(encoding="utf-8")
+
+from langchain.chat_models import init_chat_model
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableConfig
+import os
+import redis
+from loguru import logger
+
+try:
+    from langchain_redis import RedisChatMessageHistory
+    USE_LANGCHAIN_REDIS = True
+except ModuleNotFoundError:
+    from langchain_community.chat_message_histories import RedisChatMessageHistory
+    USE_LANGCHAIN_REDIS = False
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+FORCE_SAVE = os.getenv("REDIS_FORCE_SAVE","0") == "1"
+
+def _check_redis():
+    try:
+        r = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+        r.ping()
+        r.close()
+    except (redis.ConnectionError, redis.TimeoutError, redis.ResponseError) as e:
+        logger.error(
+            "Redis 连接失败（{}）。请先启动 Redis，例如：\n"
+            "  docker run -d -p 6379:6379 redis\n"
+            "若使用其他端口，可设置环境变量：REDIS_URL=redis://localhost:端口",
+            REDIS_URL,
+        )
+        raise SystemExit(1) from e
+
+_check_redis()
+
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+logger.info(
+    "Redis 历史实现：{} | REDIS_URL={}",
+    "langchain-redis" if USE_LANGCHAIN_REDIS else "langchain-community（兼容回退）",
+    REDIS_URL,
+)
+
+llm = init_chat_model(
+    model="qwen3.8-2.4t-a95b",
+    model_provider="openai",
+    api_key=os.getenv("QWEN_API_KEY"),
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+
+prompt = ChatPromptTemplate.from_messages([
+    MessagesPlaceholder(variable_name="history"),
+    ("human", "{question}")
+])
+
+def get_session_history(session_id: str) -> BaseChatMessageHistory:
+    if USE_LANGCHAIN_REDIS:
+        return RedisChatMessageHistory(
+            session_id=session_id,
+            redis_url=REDIS_URL,
+        )
+    return RedisChatMessageHistory(
+        session_id=session_id,
+        url=REDIS_URL,
+    )
+
+chain = RunnableWithMessageHistory(
+    prompt | llm,
+    get_session_history,
+    input_messages_key="question",
+    history_messages_key="history",
+)
+config = RunnableConfig(configurable={"session_id": 'user-001'})
+
+print("开始对话（输入 'quit' 退出）")
+while True:
+    question = input("\n输入问题：")
+    if question.lower() in ["quit", "exit", "q"]:
+        break
+    response = chain.invoke({"question": question}, config=config)
+    logger.info(f"AI回答:{response.content}")
+
+    if FORCE_SAVE:
+        redis_client.save()
